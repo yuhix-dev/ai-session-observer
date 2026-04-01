@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly SESSION_NAME="${AI_SESSION_NAME:-ai-session}"
+readonly DETACH_ONLY="${AI_SESSION_DETACH:-0}"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+window_index=""
+
+tmux_cmd() {
+  env -u TMUX tmux "$@"
+}
+
+if tmux_cmd has-session -t "$SESSION_NAME" 2>/dev/null; then
+  if [ "$DETACH_ONLY" = "1" ]; then
+    exit 0
+  fi
+  exec env -u TMUX tmux attach-session -t "$SESSION_NAME"
+fi
+
+tmux_cmd new-session -d -s "$SESSION_NAME"
+window_index="$(tmux_cmd display-message -p -t "$SESSION_NAME" '#I')"
+tmux_cmd split-window -h -t "${SESSION_NAME}:${window_index}"
+tmux_cmd split-window -v -t "${SESSION_NAME}:${window_index}.1"
+
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.1" "\"${SCRIPT_DIR}/claude-watch\"" C-m
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.2" "\"${SCRIPT_DIR}/codex-watch\"" C-m
+
+if [ "$DETACH_ONLY" = "1" ]; then
+  exit 0
+fi
+
+exec env -u TMUX tmux attach-session -t "$SESSION_NAME"

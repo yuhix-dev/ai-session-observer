@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+failures=0
+warnings=0
+
+pass() {
+  printf 'PASS  %s\n' "$1"
+}
+
+warn() {
+  printf 'WARN  %s\n' "$1"
+  warnings=$((warnings + 1))
+}
+
+fail() {
+  printf 'FAIL  %s\n' "$1"
+  failures=$((failures + 1))
+}
+
+check_command() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    pass "command available: $name"
+  else
+    fail "missing command: $name"
+  fi
+}
+
+check_readable_dir() {
+  local label="$1"
+  local path="$2"
+  if [[ -d "$path" && -r "$path" ]]; then
+    pass "$label directory readable: $path"
+  else
+    fail "$label directory not readable: $path"
+  fi
+}
+
+check_optional_file() {
+  local label="$1"
+  local path="$2"
+  if [[ -f "$path" && -r "$path" ]]; then
+    pass "$label file readable: $path"
+  else
+    warn "$label file not found or unreadable: $path"
+  fi
+}
+
+check_rollout_file() {
+  local latest
+
+  if [[ ! -d "$HOME/.codex/sessions" ]]; then
+    fail "Codex sessions directory not readable: $HOME/.codex/sessions"
+    return
+  fi
+
+  latest="$(find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)"
+  if [[ -n "$latest" && -r "$latest" ]]; then
+    pass "latest Codex rollout readable: $latest"
+  else
+    warn "no readable Codex rollout file found under: $HOME/.codex/sessions"
+  fi
+}
+
+printf 'ai-session-observer healthcheck\n'
+printf 'workspace: %s\n' "$(pwd)"
+
+check_command bash
+check_command tmux
+check_command jq
+
+if command -v go >/dev/null 2>&1; then
+  pass "optional command available: go"
+else
+  warn "optional command missing: go"
+fi
+
+check_readable_dir "Claude root" "$HOME/.claude"
+check_optional_file "Claude history" "$HOME/.claude/history.jsonl"
+check_readable_dir "Claude sessions" "$HOME/.claude/sessions"
+
+check_readable_dir "Codex root" "$HOME/.codex"
+check_readable_dir "Codex sessions" "$HOME/.codex/sessions"
+check_rollout_file
+
+printf '\nsummary: %s failure(s), %s warning(s)\n' "$failures" "$warnings"
+
+if [[ "$failures" -gt 0 ]]; then
+  exit 1
+fi
