@@ -68,13 +68,19 @@ printf 'ai-session-observer healthcheck\n'
 printf 'workspace: %s\n' "$(pwd)"
 
 check_command bash
+check_command python3
 check_command tmux
-check_command jq
 
 if command -v go >/dev/null 2>&1; then
   pass "optional command available: go"
 else
   warn "optional command missing: go"
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  pass "optional command available: jq"
+else
+  warn "optional command missing: jq"
 fi
 
 check_readable_dir "Claude root" "$HOME/.claude"

@@ -2,61 +2,6 @@
 
 set -euo pipefail
 
-source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-readonly MODE="$(parse_mode "$@")"
-readonly FOLLOW="$(should_follow "$@")"
-readonly SOURCE_FILE="${HOME}/.claude/history.jsonl"
-
-if [ ! -r "$SOURCE_FILE" ]; then
-  printf 'claude-watch: source not readable: %s\n' "$SOURCE_FILE" >&2
-  exit 1
-fi
-
-case "$MODE" in
-  summary)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rr '
-      fromjson?
-      | select(. != null)
-      | [
-          (.timestamp // ""),
-          ((.sessionId // "")[0:8]),
-          ((.project // "") | split("/") | last),
-          (((.display // "") | tostring | gsub("[\r\n]+"; " "))[0:100])
-        ]
-      | @tsv
-    ' | redact_stream
-    ;;
-  details)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rc '
-      fromjson?
-      | select(. != null)
-      | {
-          timestamp,
-          sessionId,
-          project,
-          display,
-          pastedContents
-        }
-    ' | jq . | redact_stream
-    ;;
-  raw)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | redact_stream
-    ;;
-  *)
-    printf 'claude-watch: unknown mode: %s\n' "$MODE" >&2
-    exit 1
-    ;;
-esac
+exec python3 "$SCRIPT_DIR/../internal/watch.py" claude "$@"
