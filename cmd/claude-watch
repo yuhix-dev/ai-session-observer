@@ -7,6 +7,14 @@ source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
 readonly MODE="$(parse_mode "$@")"
 readonly FOLLOW="$(should_follow "$@")"
 readonly PANE_PID="$(parse_pane_pid "$@")"
+readonly POLL_INTERVAL="${AI_SESSION_POLL_INTERVAL:-0.1}"
+
+cleanup_watch() {
+  trap - EXIT INT TERM
+  rm -f "$FIFO"
+  rm -rf "$WATCHED_DIR"
+  stop_background_jobs
+}
 
 format_stream() {
   case "$MODE" in
@@ -126,8 +134,9 @@ if [ -n "$PANE_PID" ]; then
   FIFO="$(mktemp -u /tmp/claude-watch-XXXXXX)"
   WATCHED_DIR="$(mktemp -d /tmp/claude-watch-watched-XXXXXX)"
   mkfifo "$FIFO"
-  # shellcheck disable=SC2064
-  trap 'rm -f "$FIFO"; rm -rf "$WATCHED_DIR"; kill 0' EXIT INT TERM
+  trap cleanup_watch EXIT
+  trap 'cleanup_watch; exit 130' INT
+  trap 'cleanup_watch; exit 143' TERM
 
   exec 3<>"$FIFO"
   format_stream < "$FIFO" &
@@ -148,7 +157,7 @@ if [ -n "$PANE_PID" ]; then
     while IFS= read -r file; do
       [ -n "$file" ] && start_tail_for_file "$file"
     done <<< "$files"
-    sleep 2
+    sleep "$POLL_INTERVAL"
   done
   exit 0
 fi

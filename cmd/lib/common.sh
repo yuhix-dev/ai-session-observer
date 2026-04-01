@@ -190,3 +190,11 @@ pane_claude_session_files() {
     find "${HOME}/.claude/projects" -type f -name "${sid}.jsonl" 2>/dev/null
   done | sort -u
 }
+
+stop_background_jobs() {
+  local pid
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+  done < <(jobs -pr)
+}
