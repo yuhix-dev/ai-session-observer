@@ -1,0 +1,22 @@
+name: ai-session-observer
+language:
+  - shell
+main_commands:
+  - ai-session
+  - claude-watch
+  - codex-watch
+  - healthcheck
+constraints:
+  - read-only observation first
+  - do not modify ~/.tmux.conf
+  - do not destroy existing sessions or logs
+entry_docs:
+  - .ai-harness/docs/index.md
+  - docs/product-spec.md
+  - docs/architecture.md
+overrides:
+  docs: true
+  prompts: true
+  runbooks: true
+  hooks: true
+  memories: true
