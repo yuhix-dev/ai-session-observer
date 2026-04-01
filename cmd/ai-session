@@ -32,9 +32,9 @@ tmux_cmd split-window -h -t "${SESSION_NAME}:${window_index}"
 # Split the right pane (PANE_CLAUDE) vertically for two watch scripts
 tmux_cmd split-window -v -t "${SESSION_NAME}:${window_index}.${PANE_CLAUDE}"
 
-PANE0_PID="$(tmux_cmd display-message -p -t "${SESSION_NAME}:${window_index}.${PANE_OP}" '#{pane_pid}')"
-tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CLAUDE}" "\"${SCRIPT_DIR}/claude-watch\" --pane-pid ${PANE0_PID}" C-m
-tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CODEX}" "\"${SCRIPT_DIR}/codex-watch\" --pane-pid ${PANE0_PID}" C-m
+PANE0_TARGET="${SESSION_NAME}:${window_index}.${PANE_OP}"
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CLAUDE}" "\"${SCRIPT_DIR}/claude-watch\" --pane-target ${PANE0_TARGET}" C-m
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CODEX}" "\"${SCRIPT_DIR}/codex-watch\" --pane-target ${PANE0_TARGET}" C-m
 
 if [ "$DETACH_ONLY" = "1" ]; then
   exit 0

@@ -68,25 +68,65 @@ parse_pane_pid() {
   done
 }
 
+parse_pane_target() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pane-target)
+        shift
+        printf '%s\n' "${1:-}"
+        return 0
+        ;;
+    esac
+    shift
+  done
+}
+
+tmux_cmd() {
+  env -u TMUX tmux "$@"
+}
+
+current_pane_pid() {
+  local pane_pid="${1:-}"
+  local pane_target="${2:-}"
+
+  if [ -n "$pane_target" ]; then
+    tmux_cmd display-message -p -t "$pane_target" '#{pane_pid}' 2>/dev/null || true
+    return 0
+  fi
+
+  printf '%s\n' "$pane_pid"
+}
+
 # Print PID and all descendant PIDs recursively
 get_descendant_pids() {
   local pid="$1"
   kill -0 "$pid" 2>/dev/null || return 0
   printf '%s\n' "$pid"
   local children
-  children=$(pgrep -P "$pid" 2>/dev/null) || return 0
+  # `pgrep -P` has proven unreliable for the tmux pane -> codex -> subagent chain
+  # on macOS. Walk the process table directly so watcher discovery follows every
+  # rollout file the active Codex tree keeps open.
+  children=$(
+    ps -ax -o pid=,ppid= 2>/dev/null \
+      | awk -v parent="$pid" '$2 == parent { print $1 }'
+  ) || return 0
+  [ -n "$children" ] || return 0
   for child in $children; do
     get_descendant_pids "$child"
   done
 }
 
-# Find rollout files currently open by the process tree of pane_pid
+# Find rollout files currently open by the process tree of pane_pid.
+# `lsof` may return non-zero when part of the process tree exits mid-scan;
+# treat that as a partial read instead of a hard failure.
 pane_codex_rollout_files() {
   local pane_pid="$1"
   local pid_list
   pid_list=$(get_descendant_pids "$pane_pid" | tr '\n' ',' | sed 's/,$//')
   [ -z "$pid_list" ] && return 0
-  lsof -p "$pid_list" 2>/dev/null \
+  {
+    lsof -p "$pid_list" 2>/dev/null || true
+  } \
     | awk '$NF ~ /rollout-.*\.jsonl$/ { print $NF }' \
     | sort -u
 }
@@ -96,7 +136,11 @@ pane_codex_rollout_files() {
 codex_rollout_label() {
   local file="$1"
 
-  jq -rs '
+  jq -Rrs '
+    def entries:
+      split("\n")
+      | map(fromjson? | select(. != null));
+
     def clean:
       gsub("[\r\n]+"; " ")
       | gsub("[[:space:]]+"; " ")
@@ -111,11 +155,18 @@ codex_rollout_label() {
        | if test("[。.!?]") then match("^[^。.!?]+[。.!?]?").string else . end
        | clip($n));
 
+    def subagent_spawn($meta):
+      if ($meta.source | type) == "object" then
+        ($meta.source.subagent.thread_spawn // {})
+      else
+        {}
+      end;
+
     def actor_nick($meta):
-      $meta.agent_nickname // ($meta.source.subagent.thread_spawn.agent_nickname // "Codex");
+      $meta.agent_nickname // (subagent_spawn($meta).agent_nickname // "Codex");
 
     def actor_role($meta):
-      $meta.agent_role // ($meta.source.subagent.thread_spawn.agent_role // "");
+      $meta.agent_role // (subagent_spawn($meta).agent_role // "");
 
     def text_of($entry):
       if $entry.type == "event_msg" and $entry.payload.type == "task_complete" then
@@ -135,15 +186,16 @@ codex_rollout_label() {
         ""
       end;
 
-    ([ .[] | select(.type == "session_meta") | .payload ] | first // {}) as $meta
-    | (if any(.[]; .type == "event_msg" and .payload.type == "task_complete") then "Completed"
-       elif any(.[]; .type == "event_msg" and .payload.type == "turn_aborted") then "Aborted"
-       elif any(.[]; .type == "event_msg" and .payload.type == "task_started") then "Started"
+    (entries) as $entries
+    | ([ $entries[] | select(.type == "session_meta") | .payload ] | first // {}) as $meta
+    | (if any($entries[]; .type == "event_msg" and .payload.type == "task_complete") then "Completed"
+       elif any($entries[]; .type == "event_msg" and .payload.type == "turn_aborted") then "Aborted"
+       elif any($entries[]; .type == "event_msg" and .payload.type == "task_started") then "Started"
        else "Active"
        end) as $status
-    | ([ .[] | select(.type == "event_msg" and .payload.type == "task_complete") | text_of(.) ] | map(select(length > 0)) | last // "") as $completion_summary
-    | ([ .[] | select(.type == "event_msg" and .payload.type == "agent_message") | text_of(.) ] | map(select(length > 0)) | last // "") as $commentary_summary
-    | ([ .[] | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | text_of(.) ] | map(select(length > 0)) | last // "") as $assistant_summary
+    | ([ $entries[] | select(.type == "event_msg" and .payload.type == "task_complete") | text_of(.) ] | map(select(length > 0)) | last // "") as $completion_summary
+    | ([ $entries[] | select(.type == "event_msg" and .payload.type == "agent_message") | text_of(.) ] | map(select(length > 0)) | last // "") as $commentary_summary
+    | ([ $entries[] | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | text_of(.) ] | map(select(length > 0)) | last // "") as $assistant_summary
     | (if $completion_summary != "" then $completion_summary
        elif $commentary_summary != "" then $commentary_summary
        else $assistant_summary
