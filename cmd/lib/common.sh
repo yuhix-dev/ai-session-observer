@@ -91,6 +91,49 @@ pane_codex_rollout_files() {
     | sort -u
 }
 
+# Build a human-readable label for a Codex rollout file.
+# Falls back to the basename when the JSONL does not expose enough metadata.
+codex_rollout_label() {
+  local file="$1"
+
+  jq -rs '
+    def clean:
+      gsub("[\r\n]+"; " ")
+      | gsub("[[:space:]]+"; " ")
+      | sub("^ +"; "")
+      | sub(" +$"; "");
+
+    def actor_nick($meta):
+      $meta.agent_nickname // ($meta.source.subagent.thread_spawn.agent_nickname // "Codex");
+
+    def actor_role($meta):
+      $meta.agent_role // ($meta.source.subagent.thread_spawn.agent_role // "");
+
+    def text_of($entry):
+      if $entry.type == "response_item"
+         and $entry.payload.type == "message"
+         and $entry.payload.role == "assistant"
+      then
+        ([ $entry.payload.content[]? | select(.type == "text") | .text ] | join(" ") | clean)
+      elif $entry.type == "event_msg" and $entry.payload.type == "agent_message" then
+        ($entry.payload.message // "" | clean)
+      else
+        ""
+      end;
+
+    ([ .[] | select(.type == "session_meta") | .payload ] | first // {}) as $meta
+    | ([ .[] | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | text_of(.) ] | map(select(length > 0)) | last // "") as $assistant_summary
+    | ([ .[] | select(.type == "event_msg" and .payload.type == "agent_message") | text_of(.) ] | map(select(length > 0)) | last // "") as $commentary_summary
+    | (if $assistant_summary != "" then $assistant_summary else $commentary_summary end) as $raw_summary
+    | ($raw_summary | if length > 140 then .[0:137] + "..." else . end) as $summary
+    | if $summary == "" then
+        ""
+      else
+        "\((actor_nick($meta)))\(if (actor_role($meta)) != "" then " [\((actor_role($meta)))]" else "" end): \($summary)"
+      end
+  ' "$file" 2>/dev/null
+}
+
 # Find Claude session IDs for the process tree of pane_pid
 # using ~/.claude/sessions/{pid}.json written by Claude Code
 pane_claude_session_ids() {

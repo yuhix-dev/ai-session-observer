@@ -101,7 +101,13 @@ if [ -n "$PANE_PID" ]; then
     [ -f "$sentinel" ] && return 0
     touch "$sentinel"
     tail -n 0 -F "$file" >> "$FIFO" &
-    printf 'codex-watch: +%s\n' "$(basename "$file")" >&2
+    local label
+    label="$(codex_rollout_label "$file")"
+    if [ -n "$label" ]; then
+      printf 'codex-watch: +%s\n' "$label" >&2
+    else
+      printf 'codex-watch: +%s\n' "$(basename "$file")" >&2
+    fi
   }
 
   while true; do
