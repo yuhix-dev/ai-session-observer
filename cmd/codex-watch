@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
+
+readonly MODE="$(parse_mode "$@")"
+readonly FOLLOW="$(should_follow "$@")"
+SOURCE_FILE="$(latest_codex_rollout)"
+
+if [ -z "${SOURCE_FILE}" ] || [ ! -r "$SOURCE_FILE" ]; then
+  printf 'codex-watch: latest rollout source not readable\n' >&2
+  exit 1
+fi
+
+case "$MODE" in
+  summary)
+    if [ "$FOLLOW" = "1" ]; then
+      tail -n 20 -F "$SOURCE_FILE"
+    else
+      tail -n 20 "$SOURCE_FILE"
+    fi | jq -Rr '
+      fromjson?
+      | select(. != null)
+      | [
+          (.timestamp // ""),
+          (.type // ""),
+          (
+            if (.payload | type) == "object" then
+              ((.payload.type // .payload.role // .payload.id // "object") | tostring)
+            else
+              (.payload | type)
+            end
+          )
+        ]
+      | @tsv
+    ' | redact_stream
+    ;;
+  details)
+    if [ "$FOLLOW" = "1" ]; then
+      tail -n 20 -F "$SOURCE_FILE"
+    else
+      tail -n 20 "$SOURCE_FILE"
+    fi | jq -Rc '
+      fromjson?
+      | select(. != null)
+      | {
+          timestamp,
+          type,
+          payload
+        }
+    ' | jq . | redact_stream
+    ;;
+  raw)
+    if [ "$FOLLOW" = "1" ]; then
+      tail -n 20 -F "$SOURCE_FILE"
+    else
+      tail -n 20 "$SOURCE_FILE"
+    fi | redact_stream
+    ;;
+  *)
+    printf 'codex-watch: unknown mode: %s\n' "$MODE" >&2
+    exit 1
+    ;;
+esac
