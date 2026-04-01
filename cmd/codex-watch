@@ -12,40 +12,43 @@ format_stream() {
   case "$MODE" in
     summary)
       jq -Rr '
+        def clean:
+          gsub("[\r\n]+"; " ")
+          | gsub("[[:space:]]+"; " ")
+          | sub("^ +"; "")
+          | sub(" +$"; "");
+
+        def clip($n):
+          if length > $n then .[0:($n - 3)] + "..." else . end;
+
+        def headline($text; $n):
+          ($text | clean
+           | if test("[。.!?]") then match("^[^。.!?]+[。.!?]?").string else . end
+           | clip($n));
+
         fromjson?
         | select(. != null)
-        | select(.type != "session_meta" and .type != "turn_context")
-        | select(.payload.type != "token_count")
-        | select(.payload.type != "function_call_output")
-        | select(.payload.type != "message")
-        | select(.payload.type != "mcp_tool_call_end" and .payload.type != "mcp_tool_call_start")
-        | select(
-            if .payload.type == "reasoning" then (.payload.content | length) > 0
-            elif .payload.type == "agent_reasoning" then (.payload.text | length) > 0
-            else true
+        | (
+            if .type == "event_msg" and .payload.type == "task_started" then
+              "start\tturn \((.payload.turn_id // "")[0:8])"
+            elif .type == "event_msg" and .payload.type == "task_complete" then
+              "done\t\((.payload.last_agent_message // "") | headline(.; 110))"
+            elif .type == "event_msg" and .payload.type == "agent_message" then
+              "note\t\((.payload.message // "") | headline(.; 110))"
+            elif .type == "event_msg" and .payload.type == "user_message" then
+              "user\t\((.payload.message // "") | headline(.; 110))"
+            elif .type == "event_msg" and .payload.type == "turn_aborted" then
+              "abort\tturn"
+            elif .type == "response_item" and .payload.type == "function_call" and .payload.name == "spawn_agent" then
+              "spawn\t\(.payload.name)"
+            else
+              ""
             end
-          )
+          ) as $summary
+        | select($summary != "")
         | [
             ((.timestamp // "") | gsub(".*T|\\..*Z$"; "")),
-            (
-              if .payload.type == "function_call" then
-                "call \t\(.payload.name // "?")"
-              elif .payload.type == "agent_message" then
-                "agent\t\((.payload.message // "") | gsub("[\\r\\n]+"; " ") | .[0:80])"
-              elif .payload.type == "user_message" then
-                "user \t\((.payload.message // "") | gsub("[\\r\\n]+"; " ") | .[0:80])"
-              elif .payload.type == "reasoning" then
-                "think\t(\(.payload.content | length) chars)"
-              elif .payload.type == "agent_reasoning" then
-                "think\t\((.payload.text // "") | gsub("[\\r\\n]+"; " ") | .[0:60])"
-              elif .payload.type == "task_started" then
-                "start\t"
-              elif .payload.type == "task_complete" then
-                "done \t"
-              else
-                "\(.type // "")\t\(.payload.type // .payload.role // "")"
-              end
-            )
+            $summary
           ]
         | @tsv
       ' | redact_stream

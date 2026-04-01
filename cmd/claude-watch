@@ -12,44 +12,75 @@ format_stream() {
   case "$MODE" in
     summary)
       jq -Rr '
+        def clean:
+          gsub("[\r\n]+"; " ")
+          | gsub("[[:space:]]+"; " ")
+          | sub("^ +"; "")
+          | sub(" +$"; "");
+
+        def clip($n):
+          if length > $n then .[0:($n - 3)] + "..." else . end;
+
+        def headline($text; $n):
+          ($text | clean
+           | if test("[。.!?]") then match("^[^。.!?]+[。.!?]?").string else . end
+           | clip($n));
+
+        def text_summary($content; $n):
+          if ($content | type) == "string" then
+            ($content | headline(.; $n))
+          elif ($content | type) == "array" then
+            ([ $content[]? | select(.type == "text") | (.text // "") ] | join(" ") | headline(.; $n))
+          else
+            ""
+          end;
+
         fromjson?
         | select(. != null)
+        | (
+            if .type == "assistant" then
+              if ((.message.content // []) | length) > 0 then
+                if .message.content[0].type == "tool_use" then
+                  "tool\t\(.message.content[0].name // "?")"
+                else
+                  (text_summary(.message.content; 96) as $summary
+                   | if $summary != "" then "reply\t\($summary)" else "assistant\tupdate" end)
+                end
+              else
+                "assistant\tupdate"
+              end
+            elif .type == "user" then
+              if (.message.content | type) == "array" and ((.message.content | length) > 0) and .message.content[0].type == "tool_result" then
+                ""
+              else
+                (text_summary(.message.content; 96) as $summary
+                 | if $summary != "" then "user\t\($summary)" else "user\t\(.message.content[0].type // "message")" end)
+              end
+            elif .type == "progress" then
+              if .data.type == "query_update" then
+                "search\t\((.data.query // "") | clean | clip(96))"
+              elif .data.type == "search_results_received" then
+                "search\t\((.data.resultCount // 0) | tostring) results"
+              elif .data.type == "agent_progress" then
+                "delegate\t\((.data.prompt // .data.message.message.content[0].text // "") | clean | clip(96))"
+              elif .data.type == "hook_progress" then
+                ""
+              else
+                "progress\t\(.data.type // "update")"
+              end
+            elif .type == "system" then
+              "system\t\(.subtype // "event")"
+            elif .type == "agent-setting" then
+              "agent\t\(.agentSetting // "set")"
+            else
+              ""
+            end
+          ) as $summary
+        | select($summary != "")
         | [
             ((.timestamp // "") | gsub(".*T|\\..*Z$"; "")),
             ((.sessionId // "")[0:8]),
-            (
-              if .type == "assistant" then
-                if ((.message.content // []) | length) > 0 then
-                  if .message.content[0].type == "tool_use" then
-                    "tool:\(.message.content[0].name // "?")"
-                  elif .message.content[0].type == "text" then
-                    "assistant:\((.message.content[0].text // "") | gsub("[\r\n]+"; " ") | .[0:80])"
-                  else
-                    "assistant:\(.message.content[0].type // "event")"
-                  end
-                else
-                  "assistant"
-                end
-              elif .type == "user" then
-                if (.message.content | type) == "string" then
-                  "user:\((.message.content // "") | gsub("[\r\n]+"; " ") | .[0:80])"
-                elif (.message.content | type) == "array" and ((.message.content | length) > 0) then
-                  if .message.content[0].type == "tool_result" then
-                    "result:\(.message.content[0].type)"
-                  else
-                    "user:\(.message.content[0].type // "event")"
-                  end
-                else
-                  "user"
-                end
-              elif .type == "system" then
-                "system:\(.subtype // "event")"
-              elif .type == "agent-setting" then
-                "agent:\(.agentSetting // "set")"
-              else
-                (.type // "event")
-              end
-            )
+            $summary
           ]
         | @tsv
       ' | redact_stream
@@ -109,7 +140,7 @@ if [ -n "$PANE_PID" ]; then
     [ -f "$sentinel" ] && return 0
     touch "$sentinel"
     tail -n 0 -F "$file" >> "$FIFO" &
-    printf 'claude-watch: +%s\n' "$(basename "$file")" >&2
+    printf 'claude-watch: +%s\n' "$(claude_session_label "$file")" >&2
   }
 
   while true; do

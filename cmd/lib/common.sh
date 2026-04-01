@@ -103,6 +103,14 @@ codex_rollout_label() {
       | sub("^ +"; "")
       | sub(" +$"; "");
 
+    def clip($n):
+      if length > $n then .[0:($n - 3)] + "..." else . end;
+
+    def headline($text; $n):
+      ($text | clean
+       | if test("[。.!?]") then match("^[^。.!?]+[。.!?]?").string else . end
+       | clip($n));
+
     def actor_nick($meta):
       $meta.agent_nickname // ($meta.source.subagent.thread_spawn.agent_nickname // "Codex");
 
@@ -110,28 +118,54 @@ codex_rollout_label() {
       $meta.agent_role // ($meta.source.subagent.thread_spawn.agent_role // "");
 
     def text_of($entry):
-      if $entry.type == "response_item"
+      if $entry.type == "event_msg" and $entry.payload.type == "task_complete" then
+        ($entry.payload.last_agent_message // "" | clean)
+      elif $entry.type == "event_msg" and $entry.payload.type == "agent_message" then
+        ($entry.payload.message // "" | clean)
+      elif $entry.type == "response_item"
          and $entry.payload.type == "message"
          and $entry.payload.role == "assistant"
       then
-        ([ $entry.payload.content[]? | select(.type == "text") | .text ] | join(" ") | clean)
-      elif $entry.type == "event_msg" and $entry.payload.type == "agent_message" then
-        ($entry.payload.message // "" | clean)
+        ([
+          $entry.payload.content[]?
+          | select(.type == "text" or .type == "output_text")
+          | (.text // "")
+        ] | join(" ") | clean)
       else
         ""
       end;
 
     ([ .[] | select(.type == "session_meta") | .payload ] | first // {}) as $meta
-    | ([ .[] | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | text_of(.) ] | map(select(length > 0)) | last // "") as $assistant_summary
+    | (if any(.[]; .type == "event_msg" and .payload.type == "task_complete") then "Completed"
+       elif any(.[]; .type == "event_msg" and .payload.type == "turn_aborted") then "Aborted"
+       elif any(.[]; .type == "event_msg" and .payload.type == "task_started") then "Started"
+       else "Active"
+       end) as $status
+    | ([ .[] | select(.type == "event_msg" and .payload.type == "task_complete") | text_of(.) ] | map(select(length > 0)) | last // "") as $completion_summary
     | ([ .[] | select(.type == "event_msg" and .payload.type == "agent_message") | text_of(.) ] | map(select(length > 0)) | last // "") as $commentary_summary
-    | (if $assistant_summary != "" then $assistant_summary else $commentary_summary end) as $raw_summary
-    | ($raw_summary | if length > 140 then .[0:137] + "..." else . end) as $summary
-    | if $summary == "" then
-        ""
-      else
-        "\((actor_nick($meta)))\(if (actor_role($meta)) != "" then " [\((actor_role($meta)))]" else "" end): \($summary)"
-      end
+    | ([ .[] | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | text_of(.) ] | map(select(length > 0)) | last // "") as $assistant_summary
+    | (if $completion_summary != "" then $completion_summary
+       elif $commentary_summary != "" then $commentary_summary
+       else $assistant_summary
+       end) as $raw_summary
+    | (headline($raw_summary; 96)) as $summary
+    | "\((actor_nick($meta)))\(if (actor_role($meta)) != "" then " [\((actor_role($meta)))]" else "" end): \($status)\(if $summary != "" then " - \($summary)" else "" end)"
   ' "$file" 2>/dev/null
+}
+
+claude_session_label() {
+  local file="$1"
+  local base
+  base="$(basename "$file" .jsonl)"
+
+  case "$file" in
+    */subagents/agent-*.jsonl)
+      printf 'subagent %s\n' "${base#agent-}"
+      ;;
+    *)
+      printf 'session %s\n' "${base}"
+      ;;
+  esac
 }
 
 # Find Claude session IDs for the process tree of pane_pid
