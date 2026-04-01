@@ -18,13 +18,23 @@ if tmux_cmd has-session -t "$SESSION_NAME" 2>/dev/null; then
   exec env -u TMUX tmux attach-session -t "$SESSION_NAME"
 fi
 
+# Respect tmux pane-base-index (commonly 0 or 1)
+PANE_BASE="$(tmux_cmd show-options -gv pane-base-index 2>/dev/null || echo 0)"
+PANE_OP="$PANE_BASE"
+PANE_CLAUDE="$((PANE_BASE + 1))"
+PANE_CODEX="$((PANE_BASE + 2))"
+
 tmux_cmd new-session -d -s "$SESSION_NAME"
 window_index="$(tmux_cmd display-message -p -t "$SESSION_NAME" '#I')"
-tmux_cmd split-window -h -t "${SESSION_NAME}:${window_index}"
-tmux_cmd split-window -v -t "${SESSION_NAME}:${window_index}.1"
 
-tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.1" "\"${SCRIPT_DIR}/claude-watch\"" C-m
-tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.2" "\"${SCRIPT_DIR}/codex-watch\"" C-m
+# Split: operation pane stays left, new right pane for watch scripts
+tmux_cmd split-window -h -t "${SESSION_NAME}:${window_index}"
+# Split the right pane (PANE_CLAUDE) vertically for two watch scripts
+tmux_cmd split-window -v -t "${SESSION_NAME}:${window_index}.${PANE_CLAUDE}"
+
+PANE0_PID="$(tmux_cmd display-message -p -t "${SESSION_NAME}:${window_index}.${PANE_OP}" '#{pane_pid}')"
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CLAUDE}" "\"${SCRIPT_DIR}/claude-watch\" --pane-pid ${PANE0_PID}" C-m
+tmux_cmd send-keys -t "${SESSION_NAME}:${window_index}.${PANE_CODEX}" "\"${SCRIPT_DIR}/codex-watch\" --pane-pid ${PANE0_PID}" C-m
 
 if [ "$DETACH_ONLY" = "1" ]; then
   exit 0

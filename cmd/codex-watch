@@ -6,6 +6,115 @@ source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
 
 readonly MODE="$(parse_mode "$@")"
 readonly FOLLOW="$(should_follow "$@")"
+readonly PANE_PID="$(parse_pane_pid "$@")"
+
+format_stream() {
+  case "$MODE" in
+    summary)
+      jq -Rr '
+        fromjson?
+        | select(. != null)
+        | select(.type != "session_meta" and .type != "turn_context")
+        | select(.payload.type != "token_count")
+        | select(.payload.type != "function_call_output")
+        | select(.payload.type != "message")
+        | select(.payload.type != "mcp_tool_call_end" and .payload.type != "mcp_tool_call_start")
+        | select(
+            if .payload.type == "reasoning" then (.payload.content | length) > 0
+            elif .payload.type == "agent_reasoning" then (.payload.text | length) > 0
+            else true
+            end
+          )
+        | [
+            ((.timestamp // "") | gsub(".*T|\\..*Z$"; "")),
+            (
+              if .payload.type == "function_call" then
+                "call \t\(.payload.name // "?")"
+              elif .payload.type == "agent_message" then
+                "agent\t\((.payload.message // "") | gsub("[\\r\\n]+"; " ") | .[0:80])"
+              elif .payload.type == "user_message" then
+                "user \t\((.payload.message // "") | gsub("[\\r\\n]+"; " ") | .[0:80])"
+              elif .payload.type == "reasoning" then
+                "think\t(\(.payload.content | length) chars)"
+              elif .payload.type == "agent_reasoning" then
+                "think\t\((.payload.text // "") | gsub("[\\r\\n]+"; " ") | .[0:60])"
+              elif .payload.type == "task_started" then
+                "start\t"
+              elif .payload.type == "task_complete" then
+                "done \t"
+              else
+                "\(.type // "")\t\(.payload.type // .payload.role // "")"
+              end
+            )
+          ]
+        | @tsv
+      ' | redact_stream
+      ;;
+    details)
+      jq -Rc '
+        fromjson?
+        | select(. != null)
+        | {
+            timestamp,
+            type,
+            payload
+          }
+      ' | jq . | redact_stream
+      ;;
+    raw)
+      redact_stream
+      ;;
+    *)
+      printf 'codex-watch: unknown mode: %s\n' "$MODE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ---- pane-pid mode ----
+if [ -n "$PANE_PID" ]; then
+  if [ "$FOLLOW" = "0" ]; then
+    # One-shot: show last 20 lines of each currently open rollout file
+    pane_codex_rollout_files "$PANE_PID" | while IFS= read -r f; do
+      [ -n "$f" ] && tail -n 20 "$f"
+    done | format_stream
+    exit 0
+  fi
+
+  FIFO="$(mktemp -u /tmp/codex-watch-XXXXXX)"
+  WATCHED_DIR="$(mktemp -d /tmp/codex-watch-watched-XXXXXX)"
+  mkfifo "$FIFO"
+  # shellcheck disable=SC2064
+  trap 'rm -f "$FIFO"; rm -rf "$WATCHED_DIR"; kill 0' EXIT INT TERM
+
+  # Open FIFO in read+write mode (non-blocking) so the reader never gets EOF between writers
+  exec 3<>"$FIFO"
+
+  # Consumer: read merged stream and format
+  format_stream < "$FIFO" &
+
+  start_tail_for_file() {
+    local file="$1"
+    local key
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    local sentinel="$WATCHED_DIR/$key"
+    [ -f "$sentinel" ] && return 0
+    touch "$sentinel"
+    tail -n 0 -F "$file" >> "$FIFO" &
+    printf 'codex-watch: +%s\n' "$(basename "$file")" >&2
+  }
+
+  while true; do
+    files="$(pane_codex_rollout_files "$PANE_PID")" || true
+    while IFS= read -r f; do
+      [ -n "$f" ] && start_tail_for_file "$f"
+    done <<< "$files"
+    sleep 2
+  done
+  exit 0
+fi
+
+# ---- legacy mode (no --pane-pid) ----
 SOURCE_FILE="$(latest_codex_rollout)"
 
 if [ -z "${SOURCE_FILE}" ] || [ ! -r "$SOURCE_FILE" ]; then
@@ -13,53 +122,8 @@ if [ -z "${SOURCE_FILE}" ] || [ ! -r "$SOURCE_FILE" ]; then
   exit 1
 fi
 
-case "$MODE" in
-  summary)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rr '
-      fromjson?
-      | select(. != null)
-      | [
-          (.timestamp // ""),
-          (.type // ""),
-          (
-            if (.payload | type) == "object" then
-              ((.payload.type // .payload.role // .payload.id // "object") | tostring)
-            else
-              (.payload | type)
-            end
-          )
-        ]
-      | @tsv
-    ' | redact_stream
-    ;;
-  details)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rc '
-      fromjson?
-      | select(. != null)
-      | {
-          timestamp,
-          type,
-          payload
-        }
-    ' | jq . | redact_stream
-    ;;
-  raw)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | redact_stream
-    ;;
-  *)
-    printf 'codex-watch: unknown mode: %s\n' "$MODE" >&2
-    exit 1
-    ;;
-esac
+if [ "$FOLLOW" = "1" ]; then
+  tail -n 20 -F "$SOURCE_FILE"
+else
+  tail -n 20 "$SOURCE_FILE"
+fi | format_stream

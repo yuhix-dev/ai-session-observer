@@ -6,57 +6,132 @@ source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
 
 readonly MODE="$(parse_mode "$@")"
 readonly FOLLOW="$(should_follow "$@")"
-readonly SOURCE_FILE="${HOME}/.claude/history.jsonl"
+readonly PANE_PID="$(parse_pane_pid "$@")"
 
-if [ ! -r "$SOURCE_FILE" ]; then
-  printf 'claude-watch: source not readable: %s\n' "$SOURCE_FILE" >&2
+format_stream() {
+  case "$MODE" in
+    summary)
+      jq -Rr '
+        fromjson?
+        | select(. != null)
+        | [
+            ((.timestamp // "") | gsub(".*T|\\..*Z$"; "")),
+            ((.sessionId // "")[0:8]),
+            (
+              if .type == "assistant" then
+                if ((.message.content // []) | length) > 0 then
+                  if .message.content[0].type == "tool_use" then
+                    "tool:\(.message.content[0].name // "?")"
+                  elif .message.content[0].type == "text" then
+                    "assistant:\((.message.content[0].text // "") | gsub("[\r\n]+"; " ") | .[0:80])"
+                  else
+                    "assistant:\(.message.content[0].type // "event")"
+                  end
+                else
+                  "assistant"
+                end
+              elif .type == "user" then
+                if (.message.content | type) == "string" then
+                  "user:\((.message.content // "") | gsub("[\r\n]+"; " ") | .[0:80])"
+                elif (.message.content | type) == "array" and ((.message.content | length) > 0) then
+                  if .message.content[0].type == "tool_result" then
+                    "result:\(.message.content[0].type)"
+                  else
+                    "user:\(.message.content[0].type // "event")"
+                  end
+                else
+                  "user"
+                end
+              elif .type == "system" then
+                "system:\(.subtype // "event")"
+              elif .type == "agent-setting" then
+                "agent:\(.agentSetting // "set")"
+              else
+                (.type // "event")
+              end
+            )
+          ]
+        | @tsv
+      ' | redact_stream
+      ;;
+    details)
+      jq -Rc '
+        fromjson?
+        | select(. != null)
+        | {
+            timestamp,
+            sessionId,
+            type,
+            subtype,
+            agentSetting,
+            message
+          }
+      ' | jq . | redact_stream
+      ;;
+    raw)
+      redact_stream
+      ;;
+    *)
+      printf 'claude-watch: unknown mode: %s\n' "$MODE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ---- pane-pid mode ----
+if [ -n "$PANE_PID" ]; then
+  if [ "$FOLLOW" = "0" ]; then
+    files="$(pane_claude_session_files "$PANE_PID")"
+    if [ -z "$files" ]; then
+      printf 'claude-watch: no active claude session in pane %s\n' "$PANE_PID" >&2
+      exit 0
+    fi
+    while IFS= read -r file; do
+      [ -n "$file" ] && tail -n 40 "$file"
+    done <<< "$files" | format_stream
+    exit 0
+  fi
+
+  FIFO="$(mktemp -u /tmp/claude-watch-XXXXXX)"
+  WATCHED_DIR="$(mktemp -d /tmp/claude-watch-watched-XXXXXX)"
+  mkfifo "$FIFO"
+  # shellcheck disable=SC2064
+  trap 'rm -f "$FIFO"; rm -rf "$WATCHED_DIR"; kill 0' EXIT INT TERM
+
+  exec 3<>"$FIFO"
+  format_stream < "$FIFO" &
+
+  start_tail_for_file() {
+    local file="$1"
+    local key
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    local sentinel="$WATCHED_DIR/$key"
+    [ -f "$sentinel" ] && return 0
+    touch "$sentinel"
+    tail -n 0 -F "$file" >> "$FIFO" &
+    printf 'claude-watch: +%s\n' "$(basename "$file")" >&2
+  }
+
+  while true; do
+    files="$(pane_claude_session_files "$PANE_PID")" || true
+    while IFS= read -r file; do
+      [ -n "$file" ] && start_tail_for_file "$file"
+    done <<< "$files"
+    sleep 2
+  done
+  exit 0
+fi
+
+# ---- legacy mode (no --pane-pid) ----
+SOURCE_FILE="$(latest_claude_project_log)"
+
+if [ -z "$SOURCE_FILE" ] || [ ! -r "$SOURCE_FILE" ]; then
+  printf 'claude-watch: source not readable\n' >&2
   exit 1
 fi
 
-case "$MODE" in
-  summary)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rr '
-      fromjson?
-      | select(. != null)
-      | [
-          (.timestamp // ""),
-          ((.sessionId // "")[0:8]),
-          ((.project // "") | split("/") | last),
-          (((.display // "") | tostring | gsub("[\r\n]+"; " "))[0:100])
-        ]
-      | @tsv
-    ' | redact_stream
-    ;;
-  details)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | jq -Rc '
-      fromjson?
-      | select(. != null)
-      | {
-          timestamp,
-          sessionId,
-          project,
-          display,
-          pastedContents
-        }
-    ' | jq . | redact_stream
-    ;;
-  raw)
-    if [ "$FOLLOW" = "1" ]; then
-      tail -n 20 -F "$SOURCE_FILE"
-    else
-      tail -n 20 "$SOURCE_FILE"
-    fi | redact_stream
-    ;;
-  *)
-    printf 'claude-watch: unknown mode: %s\n' "$MODE" >&2
-    exit 1
-    ;;
-esac
+if [ "$FOLLOW" = "1" ]; then
+  tail -n 20 -F "$SOURCE_FILE"
+else
+  tail -n 20 "$SOURCE_FILE"
+fi | format_stream
