@@ -4,4 +4,4 @@
 *.log
 tmp/
 dist/
-viewer
+/viewer
