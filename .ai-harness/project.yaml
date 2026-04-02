@@ -1,7 +1,9 @@
 name: ai-session-observer
 language:
   - shell
+  - go
 main_commands:
+  - ai-session-observer
   - ai-session
   - claude-watch
   - codex-watch
