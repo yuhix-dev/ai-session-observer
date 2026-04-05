@@ -8,3 +8,9 @@
 3. `docs/product-spec.md`
 4. `docs/architecture.md`
 5. `docs/development.md`
+
+## Harness operations
+- Rules: `.claude/rules/`
+- Skills: `.claude/skills/`
+- Hooks: `.claude/hooks/`
+- Progress artifact: `.ai-harness/claude-progress.txt`

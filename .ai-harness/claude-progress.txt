@@ -1,0 +1,14 @@
+## Completed
+- [x] rules/skills/hooks baseline導入（2026-04-05）
+
+## In Progress
+- [ ] 失敗再発の記録運用を定着
+
+## Decision Log
+2026-04-05: Rule Of Three に従い、再発3回で rules 昇格を採用。
+
+## Known Issues
+- [ ] 具体的な再発パターンは今後の運用で追記。
+
+## Next Session
+- 失敗記録を追加し、必要なら hook / lint へ昇格。

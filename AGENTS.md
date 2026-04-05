@@ -9,6 +9,12 @@
 4. `docs/architecture.md`
 5. `docs/development.md`
 
+## Harness operations
+- Rules: `.claude/rules/`
+- Skills: `.claude/skills/`
+- Hooks: `.claude/hooks/`
+- Progress artifact: `.ai-harness/claude-progress.txt`
+
 ## project 固有ルール
 - この repo は監視とオーケストレーションに限定する
 - read-only 観測を優先し、既存 session やログを破壊しない
